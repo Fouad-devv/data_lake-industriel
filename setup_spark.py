@@ -1,5 +1,6 @@
 import os
 import shutil
+import sys
 
 
 def _find_java():
@@ -37,7 +38,8 @@ def get_spark_session(app_name="DataLakeIndustriel"):
     """Return a configured SparkSession with Delta Lake support."""
     _find_java()
 
-    os.environ["PYSPARK_PYTHON"] = shutil.which("python") or "python"
+    os.environ["PYSPARK_PYTHON"] = sys.executable
+    os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
 
     from pyspark.sql import SparkSession
 
