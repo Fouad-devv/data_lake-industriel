@@ -53,38 +53,63 @@ def _find_python_executable():
     return sys.executable  # give up
 
 
+def _is_valid_java_home(path):
+    """Return True if path is a real JDK/JRE with a working java binary."""
+    if not path or not os.path.isdir(path):
+        return False
+    java_bin = os.path.join(path, "bin", "java.exe")
+    if os.path.isfile(java_bin):
+        return True
+    # Linux/Mac
+    java_bin_unix = os.path.join(path, "bin", "java")
+    return os.path.isfile(java_bin_unix)
+
+
 def _find_java():
-    """Detect Java installation and set JAVA_HOME if needed."""
-    if os.environ.get("JAVA_HOME") and os.path.isdir(os.environ["JAVA_HOME"]):
+    """Detect Java installation and set JAVA_HOME to a real JDK directory."""
+    # Already set and valid → nothing to do
+    current = os.environ.get("JAVA_HOME", "")
+    if _is_valid_java_home(current):
         return
 
+    # Force the known JDK path directly (discovered from registry scan)
+    hardcoded = r"C:\Program Files\Java\jdk-21.0.10"
+    if _is_valid_java_home(hardcoded):
+        os.environ["JAVA_HOME"] = hardcoded
+        return
+
+    # Try to derive from `java` in PATH, but validate the result
     java_exe = shutil.which("java")
     if java_exe:
-        java_bin = os.path.dirname(os.path.abspath(java_exe))
-        java_home = os.path.dirname(java_bin)
-        if os.path.isdir(java_home):
-            os.environ["JAVA_HOME"] = java_home
+        java_exe = os.path.abspath(java_exe)
+        # Resolve symlinks/junctions so we get the real binary
+        try:
+            java_exe = os.path.realpath(java_exe)
+        except Exception:
+            pass
+        java_bin_dir = os.path.dirname(java_exe)
+        java_home_candidate = os.path.dirname(java_bin_dir)
+        if _is_valid_java_home(java_home_candidate):
+            os.environ["JAVA_HOME"] = java_home_candidate
             return
 
+    # Scan common install locations
     candidates = [
         r"C:\Program Files\Java\jdk-21.0.10",
         r"C:\Program Files\Java\jdk-21",
-        r"C:\Program Files\Java\latest",
         r"C:\Program Files\Java\jdk-17",
         r"C:\Program Files\Java\jdk-11",
-        r"C:\Program Files\Java\jdk-8",
         r"C:\Program Files\Eclipse Adoptium\jdk-21.0.3.9-hotspot",
         r"C:\Program Files\Eclipse Adoptium\jdk-17.0.7.7-hotspot",
         r"C:\Program Files\Eclipse Adoptium\jdk-11.0.19.7-hotspot",
         r"C:\Program Files\Microsoft\jdk-17.0.7.7-hotspot",
         r"C:\Program Files\Microsoft\jdk-11.0.19.7-hotspot",
-        r"C:\Program Files\OpenJDK\jdk-11",
-        r"C:\Program Files\OpenJDK\jdk-17",
         "/usr/lib/jvm/java-11-openjdk-amd64",
         "/usr/lib/jvm/java-17-openjdk-amd64",
+        "/usr/lib/jvm/java-21-openjdk-amd64",
     ]
     for c in candidates:
-        if os.path.isdir(c):
+        if _is_valid_java_home(c):
             os.environ["JAVA_HOME"] = c
             return
 
@@ -94,45 +119,55 @@ _python_exe = _find_python_executable()
 os.environ["PYSPARK_PYTHON"] = _python_exe
 os.environ["PYSPARK_DRIVER_PYTHON"] = _python_exe
 
+# ── HADOOP_HOME for Windows (winutils.exe required by PySpark on Windows) ──
+if os.name == "nt":
+    _hadoop_home = r"C:\hadoop"
+    if os.path.isfile(os.path.join(_hadoop_home, "bin", "winutils.exe")):
+        os.environ["HADOOP_HOME"] = _hadoop_home
+        os.environ["hadoop.home.dir"] = _hadoop_home
+
+
+_DELTA_JARS_DIR = r"C:\hadoop\delta_jars"
+_DELTA_JARS = [
+    "delta-spark_2.12-3.0.0.jar",
+    "delta-storage-3.0.0.jar",
+    "antlr4-runtime-4.9.3.jar",
+]
+
+
+def _get_delta_jars_path():
+    """Return comma-separated absolute paths to the Delta Lake JARs."""
+    paths = []
+    for jar in _DELTA_JARS:
+        full = os.path.join(_DELTA_JARS_DIR, jar)
+        if os.path.isfile(full):
+            paths.append(full)
+    return ",".join(paths)
+
 
 def get_spark_session(app_name="DataLakeIndustriel"):
-    """Return a configured SparkSession with Delta Lake support."""
+    """Return a configured SparkSession with Delta Lake support (local JARs, no Maven download)."""
     _find_java()
 
-    # Set SPARK_HOME explicitly from pyspark package location
-    try:
-        import importlib.util
-        spec = importlib.util.find_spec("pyspark")
-        if spec and spec.origin:
-            spark_home = os.path.dirname(os.path.dirname(spec.origin))
-            # spark_home = ...site-packages/pyspark
-            spark_home = os.path.dirname(spec.origin)
-            os.environ.setdefault("SPARK_HOME", spark_home)
-    except Exception:
-        pass
+    delta_jars = _get_delta_jars_path()
 
     from pyspark.sql import SparkSession
 
     spark = (
         SparkSession.builder.appName(app_name)
         .master("local[*]")
-        .config(
-            "spark.jars.packages",
-            "io.delta:delta-core_2.12:3.0.0",
-        )
-        .config(
-            "spark.sql.extensions",
-            "io.delta.sql.DeltaSparkSessionExtension",
-        )
-        .config(
-            "spark.sql.catalog.spark_catalog",
-            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
-        )
+        .config("spark.jars", delta_jars)
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         .config("spark.driver.memory", "4g")
         .config("spark.sql.shuffle.partitions", "4")
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.ui.showConsoleProgress", "false")
         .config("spark.sql.legacy.timeParserPolicy", "LEGACY")
+        # Use RawLocalFileSystem instead of ChecksumFileSystem to avoid
+        # NativeIO$Windows.access0 UnsatisfiedLinkError on Windows
+        .config("spark.hadoop.fs.file.impl", "org.apache.hadoop.fs.RawLocalFileSystem")
+        .config("spark.hadoop.fs.file.impl.disable.cache", "true")
         .getOrCreate()
     )
 
