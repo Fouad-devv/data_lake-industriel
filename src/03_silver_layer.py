@@ -7,7 +7,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from setup_spark import get_spark_session, stop_spark
 from pyspark.sql import functions as F
-from pyspark.sql.types import TimestampType
 from pyspark.sql.window import Window
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -16,31 +15,18 @@ SILVER_DIR = os.path.join(BASE_DIR, "data", "silver")
 os.makedirs(SILVER_DIR, exist_ok=True)
 
 
-# ─── UDF : parse timestamps with two possible formats ─────────────────────────
+# ─── Native timestamp parser (no Python UDF — avoids Python worker incompatibility) ───
 
-def _make_ts_udf():
-    from pyspark.sql.functions import udf
-    from pyspark.sql.types import TimestampType
-    import datetime
-
-    @udf(TimestampType())
-    def parse_timestamp(ts_str):
-        if ts_str is None:
-            return None
-        for fmt in (
-            "%Y-%m-%dT%H:%M:%S",
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%dT%H:%M:%S.%f",
-            "%d/%m/%Y %H:%M",
-            "%d/%m/%Y %H:%M:%S",
-        ):
-            try:
-                return datetime.datetime.strptime(ts_str, fmt)
-            except ValueError:
-                continue
-        return None
-
-    return parse_timestamp
+def parse_timestamp_native(col_expr):
+    """Try multiple timestamp formats using native Spark functions."""
+    formats = [
+        "yyyy-MM-dd'T'HH:mm:ss",
+        "yyyy-MM-dd HH:mm:ss",
+        "yyyy-MM-dd'T'HH:mm:ss.SSSSSS",
+        "dd/MM/yyyy HH:mm",
+        "dd/MM/yyyy HH:mm:ss",
+    ]
+    return F.coalesce(*[F.to_timestamp(col_expr, fmt) for fmt in formats])
 
 
 # ─── SILVER SENSORS ────────────────────────────────────────────────────────────
@@ -55,8 +41,7 @@ def process_silver_sensors(spark):
     n_after_dedup = df.count()
 
     # 2. Normaliser timestamp
-    parse_ts = _make_ts_udf()
-    df = df.withColumn("timestamp_clean", parse_ts(F.col("timestamp").cast("string")))
+    df = df.withColumn("timestamp_clean", parse_timestamp_native(F.col("timestamp").cast("string")))
 
     # 3. Détecter anomalies
     df = (
@@ -130,8 +115,7 @@ def process_silver_scada(spark):
     df = df.withColumn("code_alarme", F.upper(F.col("code_alarme")))
 
     # Parser timestamp
-    parse_ts = _make_ts_udf()
-    df = df.withColumn("timestamp_clean", parse_ts(F.col("timestamp").cast("string")))
+    df = df.withColumn("timestamp_clean", parse_timestamp_native(F.col("timestamp").cast("string")))
 
     # Dédupliquer sur (machine_id, timestamp, etat)
     df = df.dropDuplicates(["machine_id", "timestamp", "etat"])
@@ -162,11 +146,10 @@ def process_silver_mes(spark):
     df = spark.read.format("delta").load(os.path.join(BRONZE_DIR, "mes"))
 
     # Parser timestamps (already ISO strings in CSV)
-    parse_ts = _make_ts_udf()
     df = (
-        df.withColumn("date_debut_clean", parse_ts(F.col("date_debut").cast("string")))
-        .withColumn("date_fin_prevue_clean", parse_ts(F.col("date_fin_prevue").cast("string")))
-        .withColumn("date_fin_reelle_clean", parse_ts(F.col("date_fin_reelle").cast("string")))
+        df.withColumn("date_debut_clean", parse_timestamp_native(F.col("date_debut").cast("string")))
+        .withColumn("date_fin_prevue_clean", parse_timestamp_native(F.col("date_fin_prevue").cast("string")))
+        .withColumn("date_fin_reelle_clean", parse_timestamp_native(F.col("date_fin_reelle").cast("string")))
     )
 
     # Calculs

@@ -119,12 +119,16 @@ _python_exe = _find_python_executable()
 os.environ["PYSPARK_PYTHON"] = _python_exe
 os.environ["PYSPARK_DRIVER_PYTHON"] = _python_exe
 
-# ── HADOOP_HOME for Windows (winutils.exe required by PySpark on Windows) ──
+# ── HADOOP_HOME for Windows (winutils.exe + hadoop.dll required by PySpark on Windows) ──
 if os.name == "nt":
     _hadoop_home = r"C:\hadoop"
     if os.path.isfile(os.path.join(_hadoop_home, "bin", "winutils.exe")):
         os.environ["HADOOP_HOME"] = _hadoop_home
         os.environ["hadoop.home.dir"] = _hadoop_home
+        # Add C:\hadoop\bin to PATH so the JVM can load hadoop.dll via System.loadLibrary("hadoop")
+        _hadoop_bin = os.path.join(_hadoop_home, "bin")
+        if _hadoop_bin.lower() not in os.environ.get("PATH", "").lower():
+            os.environ["PATH"] = _hadoop_bin + os.pathsep + os.environ.get("PATH", "")
 
 
 _DELTA_JARS_DIR = r"C:\hadoop\delta_jars"
