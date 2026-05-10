@@ -1,0 +1,6 @@
+mois,produit_id,quantite_totale_produite,quantite_totale_prevue,taux_rebut_moyen_pct,nb_ordres_en_retard,taux_realisation_pct
+1,PROD_D,21517,23072,2.63,22,93.26
+1,PROD_E,19845,21602,2.33,24,91.87
+1,PROD_C,20268,21947,2.47,26,92.35
+1,PROD_A,23341,25184,2.46,19,92.68
+1,PROD_B,15510,16830,2.46,15,92.16
