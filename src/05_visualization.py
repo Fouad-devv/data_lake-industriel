@@ -72,6 +72,7 @@ def figure_sensors():
     ax = axes[1, 0]
     if "nb_alarmes" in df.columns:
         pivot = df.pivot_table(index="date", columns="machine_id", values="nb_alarmes", aggfunc="sum", fill_value=0)
+        pivot.index = pivot.index.strftime("%Y-%m-%d")
         pivot.plot(kind="bar", stacked=True, ax=ax,
                    color=[machine_colors.get(c, "#888") for c in pivot.columns], legend=True)
     ax.set_title("Alarmes Quotidiennes par Machine")
